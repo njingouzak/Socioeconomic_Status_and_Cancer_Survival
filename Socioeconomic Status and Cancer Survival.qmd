@@ -1,0 +1,559 @@
+---
+title: "**Socioeconomic Status and Cancer Survival: A Survival Analysis Using Kaplan–Meier and Cox Regression**"
+author: Badou Zaki Njingou
+date: "2026-08-20"
+format: 
+  html: 
+    toc: true
+editor: visual
+execute:
+  echo: true
+  warning: false
+crossref:
+  fig-title: "**Figure**"
+  tbl-title: "**Table**"
+editor_options: 
+  chunk_output_type: console
+---
+
+
+## **Introduction**
+
+Cancer remains a leading cause of mortality worldwide, with patient survival determined not only by tumor biology and clinical care but also by the social and economic conditions in which individuals live. Socioeconomic status (SES), education, and access to healthcare resources has emerged as a critical determinant of cancer outcomes. Patients from lower SES backgrounds often experience barriers to early detection, delayed diagnosis at advanced stages, and reduced access to high-quality treatment and supportive care, all of which contribute to poorer survival. While the association between SES and cancer mortality is well documented, isolating its independent effect requires careful adjustment for established clinical prognostic factors such as age, cancer stage, and treatment setting. Survival analysis techniques, including Kaplan-Meier estimation and Cox proportional hazards regression, offer robust frameworks for examining time-to-event data while accounting for censoring and confounding. This study therefore aims to assess whether socioeconomic status is independently associated with survival differences among cancer patients, using individual-level data from the Compaq dataset and applying established survival analysis methods in R.
+
+
+## **Objectives**
+
+The primary objective of this project is to evaluate the association between socioeconomic status and overall survival among cancer patients in the Compaq cohort. Specifically, the analysis aims to:
+
+- Compare survival distributions across socioeconomic groups using Kaplan–Meier survival curves and the log-rank test.
+- Estimate the association between socioeconomic status and mortality using Cox proportional hazards regression, first in an unadjusted model and then after adjusting for age group, cancer stage, and hospital type.
+- Quantify differences in mortality risk across socioeconomic groups using hazard ratios (HRs) and 95% confidence intervals.
+- Assess the proportional hazards assumption using Schoenfeld residual tests to evaluate the validity of the Cox regression model and identify potential violations among the included covariates.
+
+
+
+## **Data Source**
+
+This analysis uses the Compaq cohort data from the epiDisplay R package. The dataset contains individual-level cancer survival data along with socioeconomic and clinical variables.
+
+**Key variables:**
+
+**`ses`**: Socioeconomic status (Rich, High-middle, Poor-middle, Poor)
+
+**`status`**: Event indicator (death)
+
+**`year`**: Survival time
+
+**`agegr`**: Age group
+
+**`stage`**: Cancer stage
+
+**`hospital`**: Hospital type
+
+
+
+## **Project workflow**
+
+- Data preparation
+- Exploratory data analysis
+- Descriptive analysis
+- Kaplan-Meier survival analysis
+- Cox proportional hazards regression
+- Proportional hazards assumption diagnostics
+
+
+
+## **Import packages**
+
+```{r}
+#| output: false
+
+library(epiDisplay)
+library(tidyverse)
+library(gtsummary)
+library(survival)
+library(survminer)
+library(broom)
+library(gt)
+library(labelled)
+library(ggsurvfit)
+library(condSURV)
+library(ggstats)
+library(kableExtra)
+library(naniar)
+library(gtExtras)
+library(conflicted)
+
+conflicted::conflicts_prefer(gtsummary::select)
+```
+
+## **Data Preparation**
+
+### Load data
+
+```{r}
+
+data("Compaq")
+
+df <- Compaq
+
+# Display the first few rows
+kable(head(df))
+
+```
+
+### Check the structure of the dataset
+
+```{r}
+glimpse(df)
+
+```
+
+### Check unique values for different variables
+
+```{r}
+df |> 
+  gtsummary::select(hospital, stage, agegr, ses, status) |> 
+  map(unique)
+
+```
+
+### Identify Duplicate rows in the dataset
+
+```{r}
+df |> 
+  duplicated() |> 
+  sum()
+
+```
+
+### Identify missing values in each column
+
+```{r}
+miss_var_summary(df) |> 
+  gt() |> 
+  gt_theme_guardian() |>  
+  tab_header(title = "Missingness of variables")
+```
+
+### Labeling and recoding the features
+
+```{r}
+df <- df |> 
+  set_variable_labels(
+    id = "Participant ID",
+    hospital = "Hospital type",
+    agegr = "Age group (in years)",
+    stage = "Cancer stage",
+    year = "Survival time (in year)",
+    status = "Status",
+    ses = "Socioeconomic status"
+  ) |> 
+  mutate(ses = recode(ses, 
+                      "Poor-middle" = "Middle",
+                      "High-middle" = "Middle"))
+
+```
+
+
+### Summary Statistic
+
+```{r}
+summary(df)
+```
+
+
+## **Exploratory Data Analysis (EDA)**
+
+### Data visualization
+
+```{r}
+#| label: fig-SES
+#| fig-cap: Distribution of Socioeconomic Status among cohort participants
+
+# Graphical representation of socioeconomic status of the cohort participant
+
+df %>%
+  count(ses) %>%
+  mutate(percentage = n / sum(n) * 100,
+         label = paste0(round(percentage, 1), "%")) %>% 
+  ggplot(aes(x = 2, y = n, fill = ses)) +  # x = 2 creates donut hole
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    geom_text(aes(label = label), 
+            position = position_stack(vjust = 0.5),
+            size = 5) +
+    xlim(0.7, 2.5) +  # Controls donut hole size
+    theme_minimal() + 
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = "right"
+  )
+
+```
+
+
+```{r}
+#| label: fig-age
+#| fig-cap: Distribution of Age Group of the cohort participants
+
+# Graphical representation of the age group of the cohort participant 
+
+df |>  
+  ggplot(aes(x= agegr)) + 
+    geom_bar(fill= "aquamarine2") + 
+    geom_text(stat = "count", 
+            aes(label = after_stat(count)), 
+            vjust = 1.5,
+            size = 5) +
+    labs(x= "Age Group (in years)") +
+    theme_minimal()  + 
+    theme(panel.grid = element_blank(), 
+          plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r}
+#| label: fig-stage
+#| fig-cap: Representation of the cancer stage among the cohort participant
+
+# Graphical representation of the cancer stage among the cohort participant
+
+df |>  
+  ggplot(aes(x= stage)) + 
+    geom_bar(fill= "coral1") +
+    geom_text(stat = "count", 
+            aes(label = after_stat(count)), 
+            vjust = 1.5,
+            size = 5) +
+    labs(x= "Cancer Stage") +
+    theme_minimal()  + 
+    theme(panel.grid = element_blank(), 
+          plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r}
+#| label: fig-hospital
+#| fig-cap: Representation of the hospital type where cancer patients were treated
+
+# Graphical representation of the hospital type
+
+df %>%
+  count(hospital) %>%
+  mutate(percentage = n / sum(n) * 100,
+         label = paste0(round(percentage, 1), "%")) %>% 
+  ggplot(aes(x = "", y = n, fill = hospital)) +  
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    geom_text(aes(label = label), 
+            position = position_stack(vjust = 0.5), size = 5) +
+    theme_minimal() + 
+    theme(
+      panel.grid = element_blank(),
+      plot.title = element_text(hjust = 0.5),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = "right"
+  )
+
+```
+
+
+```{r}
+#| label: fig-time
+#| fig-cap: Distribution of Survival Time
+
+# Graphical representation of survival time
+
+df |> 
+  ggplot(aes(x= year)) + 
+    geom_histogram(fill= "darkorange", bins=30) + 
+    labs(x= "Year") +
+    theme_minimal()  + 
+    theme(panel.grid = element_blank(), 
+          plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r}
+#| label: fig-status
+#| fig-cap: Distribution of patients status at the end of the study
+
+# Graphical representation of patients status at the end of the study
+
+df |>  
+  ggplot(aes(x= factor(status))) + 
+    geom_bar(fill= "cyan") +
+    geom_text(stat = "count", 
+            aes(label = after_stat(count)), 
+            vjust = 1.5,
+            size = 5) +
+    labs(x= "Status") +
+    scale_x_discrete(labels= c("0"= "Alive", "1"= "Dead")) +
+    theme_minimal()  + 
+    theme(panel.grid = element_blank(), 
+          plot.title = element_text(hjust = 0.5))
+
+```
+
+
+### Descriptive of baseline characteristics
+
+```{r}
+#| label: tbl-description
+#| tbl-cap: Baseline Characteristics of Cancer Patients
+
+df %>%
+  mutate(status = factor(status, levels = c(0, 1), 
+                         labels = c("Alive", "Dead"))) %>% 
+  set_variable_labels(status = "Status") %>%
+  tbl_summary(include = c(agegr, stage, 
+                          hospital, ses, year, status)) %>%
+  bold_labels() %>% modify_header(label = "**Variable**")
+
+```
+
+
+**Interpretation of Baseline characteristics**
+
+**Table 1** summarizes the characteristics of the 1,064 cancer patients included in the study.The median survival time was 5.17 years (IQR: 3.11–5.42). At the end of follow-up, 673 patients (63%) were alive and 391 (37%) had died. The cohort was fairly balanced across age groups, with 28% aged under 40 years, 27% aged 40–49 years, 23% aged 50–59 years, and 23% aged 60 years or older. Most patients presented with early-stage disease: Stage 1 (50%) and Stage 2 (37%), while Stage 3 and Stage 4 accounted for 7.6% and 5.9%, respectively. The majority received care at public hospitals (73%), and half belonged to the middle socioeconomic class (50%).
+
+
+### Descriptive of baseline characteristics by vital status 
+
+```{r}
+#| label: tbl-status
+#| tbl-cap: Baseline Characteristics of Cancer Patients by Vital Status
+
+df %>% 
+  mutate(status = factor(status, levels = c(0, 1), 
+                         labels = c("Alive", "Dead"))) %>% 
+  set_variable_labels(status = "Status") %>%  
+  tbl_summary(by = status,
+  include = c(ses, agegr, stage, hospital)) %>% 
+  add_n() %>% 
+  add_p() %>%
+  modify_header(label = "**Variable**") %>% 
+  bold_labels() %>%
+  bold_p()
+
+```
+
+
+**Interpretation of Baseline characteristics by vital status**
+
+**Table 2** compares the baseline characteristics of patients who were alive and those who had died by the end of follow-up. Socioeconomic status, age group, cancer stage, and hospital type were all significantly associated with vital status (**p < 0.001**). Among survivors, the middle socioeconomic group represented the largest proportion (55%), whereas poor socioeconomic status was more common among deceased patients (29%) than survivors (20%). Older patients were more frequently represented among those who died, with patients aged 60 years or older accounting for 40% of deaths compared with 12% among survivors. Cancer stage also showed a strong association with mortality: Stage 1 patients represented 62% of survivors but only 29% of deceased patients, while Stage 3–4 cancers accounted for 29% of deaths compared with 4.3% among survivors. Finally, patients treated in public hospitals represented a larger proportion of deceased patients (83%) than survivors (68%). These findings suggest that socioeconomic status, older age, advanced cancer stage, and hospital type were associated with mortality in this cohort.
+
+
+## **Kaplan-Meier survival analysis**
+
+### Creating Survival Object
+
+```{r}
+surv_object <- Surv(time = df$year, event = df$status)
+
+```
+
+
+### Kaplan-Meier curves
+
+```{r}
+#| label: fig-km-plot
+#| fig-cap: Survival curves for socioeconomic status group
+
+# Stratified Kaplan-Meier estimates
+km_ses <- survfit2(surv_object~ses, data = df)
+
+# Median survival by strata
+km_ses
+
+#--- Stratified KM curves with 95% CI,---
+ggsurvplot(
+  km_ses,
+  data = df,
+  pval = TRUE,
+  risk.table = TRUE,
+  conf.int = TRUE,
+  size=1.4,
+  legend.title = "Socioeconomic Status",
+  legend.labs = c("Rich", "Middle", "poor"),
+  xlab = "Survival Time (in year)",
+  ylab = "Survival Probability",
+  risk.table.height = 0.35,
+  surv.median.line = "hv",
+  ggtheme = theme_bw()
+)
+
+```
+
+
+**Interpretation of Stratified Kaplan-Meier curves**
+
+The Kaplan-Meier curve (**figure 7**) reveals a statistically significant difference in overall survival across socioeconomic groups (`p = 0.0015`). Patients of middle socioeconomic status demonstrated the most favorable survival trajectory, maintaining the highest probability of survival throughout the 16-year follow-up without reaching the median survival threshold. Conversely, poor patients exhibited the poorest outcomes with a median survival of approximately 7.5 years, while rich patients showed an intermediate prognosis with median survival around 10 years. These findings indicate that middle socioeconomic status is associated with a distinct survival advantage, whereas poverty confers the greatest mortality risk in this cancer cohort.
+
+
+### Log-rank testing
+
+```{r}
+survdiff(surv_object~ses, data = df)
+
+```
+
+
+**Interpretation of log-rank test**
+
+The log-rank test confirms a statistically significant difference in survival across socioeconomic groups (**p = 0.001**). Patients of middle socioeconomic status experienced substantially fewer deaths than expected under the null hypothesis (167 observed vs. 202.1 expected), indicating a marked survival advantage. Conversely, both rich and poor patients exhibited more deaths than expected (rich: 112 vs. 98.1; poor: 112 vs. 90.8), with poor patients showing the greatest relative excess mortality. These results demonstrate that socioeconomic status is a significant predictor of survival in this cohort, with the middle class experiencing the most favorable outcomes.
+
+
+## **Cox Proportional Hazards Regression**
+
+### Unadjusted Cox regression
+
+```{r}
+cox_unadj <- coxph(surv_object ~ ses, data = df)
+summary(cox_unadj)
+
+```
+
+
+```{r}
+#| label: tbl-univariate
+#| tbl-cap: Unadjusted Cox Proportional Hazards Regression of Overall Survival
+
+cox_unadj %>% 
+  tbl_regression(exponentiate =TRUE, 
+    label = list(ses= "Socioeconomic Status")             
+    ) %>% 
+  add_global_p() %>%
+  bold_p() %>%
+  bold_labels()
+
+```
+
+
+**Interpretation of unadjusted Cox regression**
+
+In this univariate Cox proportional hazards model (**table 3**), socioeconomic status was significantly associated with overall survival (likelihood ratio test **p = 0.002**). Middle socioeconomic status had lower mortality hazard than Rich (**HR 0.72, 95% CI 0.57–0.92**), while Poor was not significantly different from Rich (HR 1.08, 95% CI 0.83–1.41).
+
+
+### Adjusted Cox regression
+
+```{r}
+#--- # Fit a Cox regression model ----
+cox_adj <- coxph(
+  surv_object ~ ses + agegr + stage + hospital,
+  data = df
+)
+
+summary(cox_adj)
+```
+
+
+```{r}
+#| label: tbl-multivariate
+#| tbl-cap: Adjusted Cox Proportional Hazards Regression of Overall Survival
+
+cox_adj %>% 
+  tbl_regression(exponentiate =TRUE
+    ) %>% 
+  add_global_p() %>%
+  bold_p() %>%
+  bold_labels()
+
+```
+
+
+```{r}
+#| label: fig-hr
+#| fig-cap: Graphical Representation of Adjusted Hazard Ratios
+
+cox_adj %>% 
+  ggcoef_model(exponentiate = TRUE)
+
+```
+
+
+**Interpretation of adjusted Cox Regression**
+
+In this multivariable Cox model (**table 4 and figure 8**), all four covariates were significantly associated with overall survival. After mutual adjustment, poor socioeconomic status had a lower hazard than Rich (**HR 0.64, 95% CI 0.48–0.85**), while Middle SES was no longer significantly different from Rich. Age exhibited a strong graded association (**p\<0.001**), with patients aged 60 years or older facing a 4.37-fold increased hazard relative to those under 40. Cancer stage was the strongest predictor (**p\<0.001**): Stage 3 disease carried an 11.2-fold increased risk compared with Stage 1, followed by Stage 2 (HR 2.15) and Stage 4 (HR 3.98). Finally, treatment in a private hospital was associated with a 34% reduction in mortality risk versus public hospitals (**HR 0.66, 95% CI 0.50–0.87**).
+
+
+## **Diagnostics**
+
+### Testing Proportional Hazards Assumption
+
+```{r}
+#| label: fig-diagnostic
+#| fig-cap: Schoenfeld Residuals Plot
+
+# Proportional hazards test
+ph_test <- cox.zph(cox_adj)
+
+# Display the result of the test
+ph_test
+
+# Schoenfeld residuals plot
+ggcoxzph(ph_test)
+
+```
+
+**Interpretation of Schoenfeld Test**
+
+For the Global Schoenfeld Test **p = 0.0064** \< 0.05, we reject the null hypothesis that the proportional hazards assumption holds for all covariates collectively. However, the global test doesn't tell you which variable is responsible. The individual tests do.
+
+the proportional hazards assumption is violated for cancer stage (**p = 0.004**), while SES, age group, and hospital type did not show significant individual violations.
+
+
+### Testing Influential Observations
+
+```{r}
+#| label: fig-influential-dfbeta
+#| fig-cap: DFBETA Plot
+
+ggcoxdiagnostics(cox_adj, type = "dfbeta",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+**Interpretation of DFBETA Plot**
+
+The DFBETA diagnostics (**figure 10**) showed that most observations had values close to zero, indicating limited individual influence on the estimated Cox regression coefficients. A small number of observations displayed relatively larger deviations, particularly for some cancer-stage coefficients. However, there was no clear evidence of a large number of highly influential observations dominating the fitted model.
+
+
+
+```{r}
+#| label: fig-inflential-deviance
+#| fig-cap: Deviance Residuals Plot
+
+ggcoxdiagnostics(cox_adj, type = "deviance",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
+**Interpretation of Deviance Plot**
+
+The deviance residuals (**figure 11**) were generally centered around zero, with most observations showing relatively small residual values. A limited number of observations exhibited larger positive or negative residuals, suggesting potential observations that are not well represented by the fitted model. Nevertheless, the overall distribution did not reveal a strong systematic pattern, and these observations should be investigated alongside the DFBETA diagnostics to determine whether they have a substantial influence on the model estimates.
+
+
+### Interpretation of influential observations:
+
+The DFBETA diagnostics indicate that most observations had limited influence on the estimated regression coefficients, with residual values generally close to zero. Although a small number of observations showed larger deviations, there was no clear evidence that individual observations substantially dominated the fitted Cox model. The deviance residuals were also generally centered around zero, although a few observations displayed relatively large residuals. These observations may represent potential outliers and could be examined further through sensitivity analyses. Overall, the diagnostic results do not suggest widespread influential observations, but the identified observations should be considered when assessing the robustness of the model.
+
+
+
+## **Conclusion**
+
+This study evaluated the association between socioeconomic status and overall survival among 1,064 cancer patients from the Compaq cohort using Kaplan–Meier estimation and Cox proportional hazards regression. The Kaplan–Meier analysis and log-rank test demonstrated significant differences in survival across socioeconomic groups, with poor socioeconomic status showing less favorable survival compared with the other groups. In the unadjusted Cox model, socioeconomic status was significantly associated with mortality; however, after adjustment for age, cancer stage, and hospital type, the association changed, with poor SES remaining significantly associated with a lower estimated hazard relative to the rich group, while the difference for the middle group was no longer statistically significant. Age, cancer stage, and hospital type were also important predictors of survival, with older age and more advanced cancer stages associated with substantially higher mortality hazards, whereas treatment in a private hospital was associated with a lower hazard. Diagnostic assessment indicated that the proportional hazards assumption was violated for cancer stage, suggesting that its effect on mortality may vary over time and should be considered when interpreting the adjusted Cox model. The influence diagnostics did not reveal an obvious pattern of extreme influential observations, although individual observations should still be examined when conducting sensitivity analyses. Overall, the findings highlight the importance of considering socioeconomic and clinical factors together when investigating cancer survival and demonstrate the value of survival analysis for identifying disparities in cancer outcomes.
+
+
+
