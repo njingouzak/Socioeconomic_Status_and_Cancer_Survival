@@ -1,1 +1,1 @@
-# Socioeconomic_Status_and_Cancer_Survival
+# Socioeconomic Status and Cancer Survival: A Survival Analysis Using Kaplan–Meier and Cox Regression
